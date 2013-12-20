@@ -1,0 +1,58 @@
+namespace :my do
+
+  set :my_local_tmp_dir, ->() { "#{fetch(:tmp_dir)}/#{fetch(:application)}" }
+
+  desc 'cap deploy via copy'
+  task :wrapper do
+    run_locally do
+      execute :mkdir, "-p", "#{fetch(:my_local_tmp_dir)}/"
+      execute :echo, "'#!/bin/sh -e\nexec /usr/bin/ssh -o PasswordAuthentication=no -o StrictHostKeyChecking=no \"\$@\"\n'", '>', "#{fetch(:my_local_tmp_dir)}/git-ssh.sh"
+      execute :chmod, "+x", "#{fetch(:my_local_tmp_dir)}/git-ssh.sh"
+    end
+  end
+
+  task clone: :'my:wrapper' do
+    run_locally do
+      if test " [ -f #{fetch(:my_local_tmp_dir)}/#{fetch(:application)}/HEAD ] "
+        info t(:mirror_exists, at: repo_path)
+      else
+        within "#{fetch(:my_local_tmp_dir)}" do
+          with fetch(:git_environmental_variables) do
+            execute :git, :clone, '--mirror', repo_url, "#{fetch(:application)}"
+          end
+        end
+      end
+    end
+  end
+
+  task update: :'my:clone' do
+    run_locally do
+      within "#{fetch(:my_local_tmp_dir)}/#{fetch(:application)}" do
+        execute :git, :remote, :update
+      end
+    end
+  end
+
+  task create_release: :'my:update' do
+    run_locally do
+      within "#{fetch(:my_local_tmp_dir)}/#{fetch(:application)}" do
+        execute :git, :archive, '--format=tar', fetch(:branch), "> #{fetch(:application)}.tar"
+      end
+    end
+  end
+
+  task deploy: :'my:create_release' do
+    tar_text = nil
+    run_locally do
+      tar_text = File.open("#{fetch(:my_local_tmp_dir)}/#{fetch(:application)}/#{fetch(:application)}.tar").read
+    end
+
+    on roles :all do
+      execute :mkdir, "-p", "#{fetch(:tmp_dir)}/#{fetch(:application)}/"
+      upload! StringIO.new(tar_text), "#{fetch(:my_local_tmp_dir)}/#{fetch(:application)}.tar"
+
+      execute :mkdir, '-p', release_path
+      execute :tar, '-xvf', "#{fetch(:my_local_tmp_dir)}/#{fetch(:application)}.tar", '-C', release_path
+    end
+  end
+end
